@@ -112,3 +112,37 @@ button.danger { border-color: #c0392b; background: #c0392b; }
   border-radius: 6px;
 }
 .hidden { display: none; }
+
+.run-status {
+  margin-bottom: 10px;
+  padding: 7px 12px;
+  border-radius: 6px;
+  font-size: 13px;
+  border: 1px solid transparent;
+}
+.run-status.ok { background: #e9f6ec; border-color: #a9d6b4; color: #1f6a33; }
+.run-status.warn { background: #fff5e6; border-color: #e7c07a; color: #8a5a10; }
+
+.anomaly-list {
+  margin-bottom: 10px;
+  padding: 8px 12px;
+  background: #fdf0f6;
+  border: 1px solid #e6a7c6;
+  border-radius: 6px;
+  font-size: 12px;
+}
+.anomaly-list h3 { margin: 0 0 6px; font-size: 13px; color: #a01760; }
+.anomaly { padding: 2px 0; color: #7c2a52; }
+.anomaly .badge {
+  display: inline-block;
+  margin-right: 6px;
+  padding: 1px 6px;
+  border-radius: 8px;
+  background: #d61e8c;
+  color: #fff;
+  font-size: 11px;
+}
+.card-badge { margin-left: 6px; padding: 1px 7px; border-radius: 8px; font-size: 11px; }
+.card-badge.ok { background: #e2f2e6; color: #1f6a33; }
+.card-badge.warn { background: #fbe0ee; color: #a01760; }
+.layout-card tr.anomaly-row td { background: #fdeef6; }

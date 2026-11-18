@@ -7,10 +7,39 @@
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 from typing import Optional
 
 import numpy as np
+
+# FreeType 的 FT_Set_Transform 位移以 26.6 固定点表示，即 1/64 设备像素。
+# 笔位相位、缓存键与栅格化必须共用这一网格，否则“先取整成整数相位、
+# 再按另一套精度建键”会在边界上取到与请求不符的位图。
+PHASE_UNITS = 64
+
+
+def split_pen_px(pen_px: float) -> tuple[int, float]:
+    """把浮点设备笔位拆成整数基准与 [0, 1) 的 1/64 相位。
+
+    先在 1/64 网格上量化，再向下取整得到基准，使 ``base + frac`` 精确等于
+    量化后的笔位。这样累计浮点误差（如 107.00000000000001）落在整数附近时
+    不会跨到相邻像素而漂移一整像素（取整边界修正）。
+    """
+    q = math.floor(pen_px * PHASE_UNITS + 0.5)
+    base = q // PHASE_UNITS
+    frac = (q - base * PHASE_UNITS) / PHASE_UNITS
+    return base, frac
+
+
+def quantize_phase(frac: float) -> float:
+    """把亚像素相位吸附到 FT_Set_Transform 的 1/64 网格。
+
+    与 :func:`split_pen_px` 用同一 half-up 取整，避免 Python 银行家舍入
+    在 0.5/64 边界上与拆位结果不一致。
+    """
+    units = math.floor(frac * PHASE_UNITS + 0.5) % PHASE_UNITS
+    return units / PHASE_UNITS
 
 
 @dataclass(frozen=True)
@@ -62,6 +91,7 @@ class GlyphCoverage:
     y_max_bearing_px: float
     hinted: bool
     subpixel_frac_x: float = 0.0
+    subpixel_frac_y: float = 0.0
 
     @property
     def width_px(self) -> int:
@@ -115,14 +145,20 @@ class PlacedGlyph:
     is_combining: bool
     scale: float  # 相对基准字号的缩放（上下标 < 1）
     dy_lu: float  # 相对基准基线的抬升（上标正、下标负）
+    # 栅格化时实际使用的整数基准与 1/64 相位；覆盖已按相位平移，
+    # 因此贴入位置必须是“整数基准 + bitmap 偏移”，不能再叠加一次 floor。
+    pen_x_base_px: int = 0
+    baseline_y_base_px: int = 0
+    subpixel_frac_x: float = 0.0
+    subpixel_frac_y: float = 0.0
 
     def target_box_px(self) -> Optional[tuple[int, int, int, int]]:
         """该字形覆盖在设备位图上应贴入的整数像素盒（含负坐标）。"""
         if self.coverage is None:
             return None
         c = self.coverage
-        x0 = int(np.floor(self.pen_x_px + c.bitmap_left_px + 0.0))
-        y0 = int(np.floor(self.baseline_y_px - c.bitmap_top_px + 0.0))
+        x0 = self.pen_x_base_px + c.bitmap_left_px
+        y0 = self.baseline_y_base_px - c.bitmap_top_px
         return (x0, y0, x0 + c.width_px, y0 + c.rows_px)
 
 

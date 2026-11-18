@@ -1,0 +1,140 @@
+{
+ "dpr2.0": {
+  "status": "ok",
+  "warnings": 0,
+  "first_rows": [
+   {
+    "text": "M",
+    "pen_x_base_px": 48,
+    "baseline_y_base_px": 120,
+    "subpixel_frac_x": 0.59375,
+    "subpixel_frac_y": 0.734375,
+    "pen_recomputed_lu": 24.296875,
+    "baseline_recomputed_lu": 60.367188,
+    "box_expected": [
+     51,
+     100,
+     71,
+     121
+    ],
+    "box_actual": [
+     51,
+     100,
+     71,
+     121
+    ]
+   },
+   {
+    "text": "Ø",
+    "pen_x_base_px": 48,
+    "baseline_y_base_px": 240,
+    "subpixel_frac_x": 0.59375,
+    "subpixel_frac_y": 0.796875,
+    "pen_recomputed_lu": 24.296875,
+    "baseline_recomputed_lu": 120.398438,
+    "box_expected": [
+     49,
+     222,
+     67,
+     242
+    ],
+    "box_actual": [
+     49,
+     222,
+     67,
+     242
+    ]
+   },
+   {
+    "text": "R",
+    "pen_x_base_px": 48,
+    "baseline_y_base_px": 350,
+    "subpixel_frac_x": 0.59375,
+    "subpixel_frac_y": 0.703125,
+    "pen_recomputed_lu": 24.296875,
+    "baseline_recomputed_lu": 175.351562,
+    "box_expected": [
+     50,
+     333,
+     64,
+     351
+    ],
+    "box_actual": [
+     50,
+     333,
+     64,
+     351
+    ]
+   }
+  ]
+ },
+ "dpr3.0": {
+  "status": "ok",
+  "warnings": 0,
+  "first_rows": [
+   {
+    "text": "M",
+    "pen_x_base_px": 72,
+    "baseline_y_base_px": 181,
+    "subpixel_frac_x": 0.90625,
+    "subpixel_frac_y": 0.109375,
+    "pen_recomputed_lu": 24.302083,
+    "baseline_recomputed_lu": 60.369792,
+    "box_expected": [
+     77,
+     150,
+     106,
+     182
+    ],
+    "box_actual": [
+     77,
+     150,
+     106,
+     182
+    ]
+   },
+   {
+    "text": "Ø",
+    "pen_x_base_px": 72,
+    "baseline_y_base_px": 361,
+    "subpixel_frac_x": 0.90625,
+    "subpixel_frac_y": 0.203125,
+    "pen_recomputed_lu": 24.302083,
+    "baseline_recomputed_lu": 120.401042,
+    "box_expected": [
+     74,
+     333,
+     100,
+     363
+    ],
+    "box_actual": [
+     74,
+     333,
+     100,
+     363
+    ]
+   },
+   {
+    "text": "R",
+    "pen_x_base_px": 72,
+    "baseline_y_base_px": 526,
+    "subpixel_frac_x": 0.90625,
+    "subpixel_frac_y": 0.046875,
+    "pen_recomputed_lu": 24.302083,
+    "baseline_recomputed_lu": 175.348958,
+    "box_expected": [
+     76,
+     500,
+     96,
+     527
+    ],
+    "box_actual": [
+     76,
+     500,
+     96,
+     527
+    ]
+   }
+  ]
+ }
+}

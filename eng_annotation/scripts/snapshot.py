@@ -42,7 +42,45 @@ def main() -> None:
             "path": png_path,
             "device_size_px": result["image_size_px"],
             "cache": result["cache"],
+            "run_status": result["run"]["status"],
+            "warnings": result["run"]["warnings"],
         }
+
+    # 工程注记旧样例：把三条默认注记移到分数逻辑位置，按 DPR 跑到底，
+    # 记录每 DPR 的运行状态与逐字采样；异常会进入 run_status 而非静默。
+    original = [(a.x_lu, a.y_lu) for a in app.drawing.annotations]
+    fractional = [(24.3, 60.37), (24.3, 120.4), (24.3, 175.35)]
+    for i, (x, y) in enumerate(fractional):
+        app.set_position(i, x, y)
+    summary["fractional_sample"] = {}
+    for ratio in (1.0, 1.5, 2.0, 2.5, 3.0):
+        app.update_settings({
+            "pixel_ratio": ratio, "hinting": True,
+            "subpixel_position": True,
+        })
+        result = app.render()
+        png_path = os.path.join(args.out, f"sheet_fractional_dpr{ratio}.png")
+        with open(png_path, "wb") as fh:
+            fh.write(base64.b64decode(result["image"]))
+        first_rows = [
+            {
+                "text": row["text"],
+                "base_y": row["baseline_y_base_px"],
+                "frac_y": row["subpixel_frac_y"],
+                "recomputed_lu": row["baseline_recomputed_lu"],
+            }
+            for ann in result["annotations"]
+            for row in ann["diagnostics"]["rows"][:1]
+        ]
+        summary["fractional_sample"][f"dpr{ratio}"] = {
+            "path": png_path,
+            "device_size_px": result["image_size_px"],
+            "run_status": result["run"]["status"],
+            "warning_count": len(result["run"]["warnings"]),
+            "first_rows": first_rows,
+        }
+    for i, (x, y) in enumerate(original):
+        app.set_position(i, x, y)
 
     # hinting 开关对比（细字号 9lu）
     for hinted in (True, False):

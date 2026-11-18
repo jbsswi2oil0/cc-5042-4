@@ -107,10 +107,12 @@ class AnnotationEngine:
         logical_size_lu: float,
         settings: RasterSettings,
         subpixel_frac_x: float = 0.0,
+        subpixel_frac_y: float = 0.0,
     ):
         device_px = logical_size_lu * settings.pixel_ratio
         return self.cache.get(
-            codepoint, device_px, settings.hinting, subpixel_frac_x
+            codepoint, device_px, settings.hinting,
+            subpixel_frac_x, subpixel_frac_y,
         )
 
     @staticmethod

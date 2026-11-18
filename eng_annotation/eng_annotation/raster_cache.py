@@ -15,7 +15,7 @@ from dataclasses import asdict
 import numpy as np
 
 from .font_backend import FontBackend
-from .models import GlyphCoverage
+from .models import GlyphCoverage, PHASE_UNITS, quantize_phase
 
 
 class GlyphCache:
@@ -34,11 +34,17 @@ class GlyphCache:
         pixel_size_px: float,
         hinting: bool,
         subpixel_frac_x: float,
+        subpixel_frac_y: float = 0.0,
     ) -> str:
+        # 相位按 FT_Set_Transform 的 1/64 网格取整后再建键：后端也是先量化
+        # 再决定 hinting/平移，两边一致才不会让 0 与 0.00004 共用同一个键
+        # 却返回不同位图（旧键用 %.4f 的十进制小数，二者会被判为同键）。
+        phase_x = int(round(quantize_phase(subpixel_frac_x) * PHASE_UNITS))
+        phase_y = int(round(quantize_phase(subpixel_frac_y) * PHASE_UNITS))
         stamp = f"{os.path.realpath(self.backend.font_path)}:" \
                 f"{os.path.getmtime(self.backend.font_path):.0f}"
         raw = f"{stamp}|{codepoint}|{pixel_size_px:.4f}|{int(hinting)}|" \
-              f"{subpixel_frac_x:.4f}"
+              f"{phase_x}|{phase_y}"
         return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:32]
 
     def get(
@@ -47,8 +53,11 @@ class GlyphCache:
         pixel_size_px: float,
         hinting: bool,
         subpixel_frac_x: float = 0.0,
+        subpixel_frac_y: float = 0.0,
     ) -> GlyphCoverage:
-        key = self.key(codepoint, pixel_size_px, hinting, subpixel_frac_x)
+        key = self.key(
+            codepoint, pixel_size_px, hinting, subpixel_frac_x, subpixel_frac_y
+        )
         if key in self._memory:
             self.hits += 1
             return self._memory[key]
@@ -61,7 +70,8 @@ class GlyphCache:
 
         self.misses += 1
         cov = self.backend.rasterize(
-            codepoint, pixel_size_px, hinting, subpixel_frac_x
+            codepoint, pixel_size_px, hinting,
+            subpixel_frac_x, subpixel_frac_y,
         )
         self._memory[key] = cov
         self._store_disk(key, cov)
@@ -98,6 +108,7 @@ class GlyphCache:
             y_max_bearing_px=meta["y_max_bearing_px"],
             hinted=meta["hinted"],
             subpixel_frac_x=meta.get("subpixel_frac_x", 0.0),
+            subpixel_frac_y=meta.get("subpixel_frac_y", 0.0),
         )
 
     def _store_disk(self, key: str, cov: GlyphCoverage) -> None:

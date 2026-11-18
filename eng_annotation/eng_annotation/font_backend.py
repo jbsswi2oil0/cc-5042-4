@@ -14,7 +14,7 @@ from dataclasses import dataclass
 import freetype
 import numpy as np
 
-from .models import GlyphCoverage
+from .models import GlyphCoverage, PHASE_UNITS, quantize_phase
 
 # Unicode 组合记号区间的最小判定（覆盖工程注记用到的重音/上下标组合符）。
 def _is_combining(codepoint: int) -> bool:
@@ -103,26 +103,36 @@ class FontBackend:
         pixel_size_px: float,
         hinting: bool,
         subpixel_frac_x: float = 0.0,
+        subpixel_frac_y: float = 0.0,
     ) -> GlyphCoverage:
         """在设备像素字号下栅格化单个字形。
 
-        subpixel_frac_x: 笔位的亚像素小数部分 [0, 1)。非零时通过
-        FT_Set_Transform 做亚像素平移，并按 FreeType 规则强制无 hinting
-        （hinting 与亚像素平移互斥，否则网格对齐会抵消平移意义）。
+        subpixel_frac_x / subpixel_frac_y: 笔位的亚像素小数部分，恒在
+        [0, 1)。二者都通过 FT_Set_Transform 平移轮廓（横向向右、纵向向上，
+        FreeType 的 y 轴朝上）。任一非零即按规则强制无 hinting：hinting 会
+        把轮廓吸附回整数网格，抵消亚像素平移。纵向相位此前被忽略，导致基线
+        只随整数像素跳变——这正是本函数显式处理 y 相位的动因。
         """
-        if not 0.0 <= subpixel_frac_x < 1.0:
-            raise ValueError("subpixel_frac_x 必须落在 [0, 1)")
+        # 相位先量化到 FT_Set_Transform 的 1/64 网格，后续判断与缓存键
+        # 都使用同一量化值，避免 0 与极小正数被分别当成“有无 hinting”。
+        if not (0.0 <= subpixel_frac_x < 1.0 and 0.0 <= subpixel_frac_y < 1.0):
+            raise ValueError("subpixel_frac_x/y 必须落在 [0, 1)")
+        frac_x = quantize_phase(subpixel_frac_x)
+        frac_y = quantize_phase(subpixel_frac_y)
         self._set_size(pixel_size_px)
 
-        use_hinting = hinting and subpixel_frac_x == 0.0
+        use_hinting = hinting and frac_x == 0.0 and frac_y == 0.0
         flags = freetype.FT_LOAD_RENDER | freetype.FT_LOAD_TARGET_NORMAL
         if not use_hinting:
             flags |= freetype.FT_LOAD_NO_HINTING
 
-        delta = freetype.Vector(0, 0)
-        if subpixel_frac_x > 0.0:
-            # FT_Set_Transform 的 delta 为 26.6 固定点设备像素。
-            delta = freetype.Vector(int(round(subpixel_frac_x * 64.0)), 0)
+        # FT_Set_Transform 的 delta 为 26.6 固定点设备像素；设备 y 轴向下，
+        # 而 FreeType 内部 y 轴向上，故纵向位移取负。
+        delta = freetype.Vector(
+            int(round(frac_x * PHASE_UNITS)),
+            -int(round(frac_y * PHASE_UNITS)),
+        )
+        shifted = frac_x != 0.0 or frac_y != 0.0
         self._apply_transform(delta)
         try:
             self._face.load_char(codepoint, flags)
@@ -131,7 +141,7 @@ class FontBackend:
                 f"栅格化失败 U+{codepoint:04X} @ {pixel_size_px}px: {exc}"
             ) from exc
         finally:
-            if subpixel_frac_x > 0.0:
+            if shifted:
                 self._apply_transform(freetype.Vector(0, 0))
 
         slot = self._face.glyph
@@ -150,7 +160,8 @@ class FontBackend:
             x_min_bearing_px=slot.metrics.horiBearingX / 64.0,
             y_max_bearing_px=slot.metrics.horiBearingY / 64.0,
             hinted=use_hinting,
-            subpixel_frac_x=subpixel_frac_x,
+            subpixel_frac_x=frac_x,
+            subpixel_frac_y=frac_y,
         )
 
     # ---- 内部 -----------------------------------------------------------

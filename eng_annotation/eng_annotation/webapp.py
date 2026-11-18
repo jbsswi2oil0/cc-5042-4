@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import base64
 import io
-import json
 import os
 from dataclasses import asdict
 
@@ -42,6 +41,7 @@ class AnnotationApp:
         )
         self.settings = RasterSettings(pixel_ratio=2.0, hinting=True)
         self.selected = 0
+        self.last_run: dict = {"status": "idle", "warnings": []}
 
     # ---- 状态序列化 -----------------------------------------------------
     def state(self) -> dict:
@@ -75,8 +75,15 @@ class AnnotationApp:
         )
         png = _png_b64(canvas)
         ann_data = []
+        warnings: list[dict] = []
         for idx, layout in enumerate(layouts):
             ann = self.drawing.annotations[idx]
+            diag = _glyph_diagnostics(
+                layout, samples[idx], self.settings.pixel_ratio,
+                self.settings.subpixel_position,
+            )
+            for w in diag["anomalies"]:
+                warnings.append({"index": idx, "name": ann.name, **w})
             ann_data.append(
                 {
                     "index": idx,
@@ -92,6 +99,10 @@ class AnnotationApp:
                             "baseline_y_lu": round(g.baseline_y_lu, 3),
                             "pen_x_px": round(g.pen_x_px, 3),
                             "baseline_y_px": round(g.baseline_y_px, 3),
+                            "pen_x_base_px": g.pen_x_base_px,
+                            "baseline_y_base_px": g.baseline_y_base_px,
+                            "subpixel_frac_x": g.subpixel_frac_x,
+                            "subpixel_frac_y": g.subpixel_frac_y,
                             "advance_lu": round(g.advance_lu, 4),
                             "combining": g.is_combining,
                             "scale": round(g.scale, 3),
@@ -108,18 +119,28 @@ class AnnotationApp:
                         }
                         for s in samples[idx]
                     ],
+                    "diagnostics": diag,
                 }
             )
-        return {
-            "image": png,
-            "image_size_px": list(canvas.shape[1::-1]),
+        self.last_run = {
+            "status": "ok" if not warnings else "warning",
             "pixel_ratio": self.settings.pixel_ratio,
-            "annotations": ann_data,
+            "annotations": len(ann_data),
+            "glyphs": sum(len(a["glyphs"]) for a in ann_data),
+            "warnings": warnings,
             "cache": {
                 "entries": len(self.engine.cache),
                 "hits": self.engine.cache.hits,
                 "misses": self.engine.cache.misses,
             },
+        }
+        return {
+            "image": png,
+            "image_size_px": list(canvas.shape[1::-1]),
+            "pixel_ratio": self.settings.pixel_ratio,
+            "annotations": ann_data,
+            "cache": self.last_run["cache"],
+            "run": self.last_run,
         }
 
     def render_glyph(self, codepoint: int, size_lu: float) -> dict:
@@ -148,6 +169,7 @@ class AnnotationApp:
                 "ink_box_px": list(cov.ink_box_px()),
                 "hinted": cov.hinted,
                 "subpixel_frac_x": cov.subpixel_frac_x,
+                "subpixel_frac_y": cov.subpixel_frac_y,
             },
             "image": _png_b64(rgb),
             "zoom": zoom,
@@ -211,6 +233,111 @@ class AnnotationApp:
         if not 0 <= index < len(self.drawing.annotations):
             raise EngineError(f"注记索引越界: {index}")
         return self.drawing.annotations[index]
+
+
+def _glyph_diagnostics(
+    layout, samples, pixel_ratio: float, subpixel_position: bool = True
+) -> dict:
+    """逐字核对栅格文字与采样位置的一致性，标出异常供界面高亮。
+
+    核对两类不变量（与内核修补后的计算对应，不是靠默认值遮错）：
+
+    * 采样位置：覆盖盒必须恰好落在整数基准 + bitmap 偏移处，且设备笔位
+      换算回逻辑单位与 pen_x_lu/baseline_y_lu 一致；
+    * 栅格文字：启用亚像素笔位时，贴入相位必须等于覆盖实际相位，否则说明
+      基线/笔位又被吸附回整数（基线漂移的回归信号）。
+
+    返回保留 6 位小数的中间量，界面表格与断言共用，不使用近似默认值。
+    """
+    anomalies: list[dict] = []
+    rows = []
+    for g, s in zip(layout.glyphs, samples):
+        cov = g.coverage
+        # 由“整数基准 + 亚相位”重建设备笔位，再换算回逻辑单位；这是栅格与
+        # 采样共同使用的量，而不是把 pen_x_lu 原样回显成默认值。
+        recon_x_px = g.pen_x_base_px + g.subpixel_frac_x
+        recon_y_px = g.baseline_y_base_px + g.subpixel_frac_y
+        recon_x_lu = round(recon_x_px / pixel_ratio, 6)
+        recon_y_lu = round(recon_y_px / pixel_ratio, 6)
+        row = {
+            "text": g.text,
+            "pen_x_base_px": g.pen_x_base_px,
+            "baseline_y_base_px": g.baseline_y_base_px,
+            "subpixel_frac_x": round(g.subpixel_frac_x, 6),
+            "subpixel_frac_y": round(g.subpixel_frac_y, 6),
+            "pen_recomputed_lu": recon_x_lu,
+            "baseline_recomputed_lu": recon_y_lu,
+        }
+        if cov is None:
+            rows.append(row)
+            continue
+
+        # 1) 采样盒必须等于整数基准 + 覆盖 bitmap 偏移（与栅格化共用基准）。
+        expect_x0 = g.pen_x_base_px + cov.bitmap_left_px
+        expect_y0 = g.baseline_y_base_px - cov.bitmap_top_px
+        box_ok = (s.box_x0, s.box_y0) == (expect_x0, expect_y0)
+        row["box_expected"] = [expect_x0, expect_y0,
+                               expect_x0 + cov.width_px,
+                               expect_y0 + cov.rows_px]
+        row["box_actual"] = [s.box_x0, s.box_y0, s.box_x1, s.box_y1]
+        if not box_ok:
+            anomalies.append({
+                "kind": "sample_box_mismatch",
+                "text": g.text,
+                "detail": f"采样盒 {row['box_actual']} ≠ 基准+偏移 {row['box_expected']}",
+            })
+
+        # 2) 采样笔位换回逻辑坐标必须与布局笔位一致。放置参考按模式而定：
+        # 亚像素模式下是量化后的笔位（误差 ≤1/64）；整数模式下是有意的逐字
+        # floor 吸附，因此与浮点笔位相差可到 1px 属预期，不与亚像素混判。
+        # 组合记号的横向位置由整数着墨盒中心决定（无亚像素平移），x 不参与。
+        if subpixel_position:
+            tol = 0.5 / 64.0 + 1e-6
+        else:
+            tol = 1.0 + 1e-6
+        if not g.is_combining and abs(recon_x_px - g.pen_x_px) > tol:
+            anomalies.append({
+                "kind": "sample_pen_x_mismatch",
+                "text": g.text,
+                "detail": (
+                    f"由基准+相位重建的笔位 {recon_x_px:.6f}px 与布局 "
+                    f"{g.pen_x_px:.6f}px 偏差超出{'1/64' if subpixel_position else '1'} 像素"
+                ),
+            })
+        if abs(recon_y_px - g.baseline_y_px) > tol:
+            anomalies.append({
+                "kind": "sample_baseline_mismatch",
+                "text": g.text,
+                "detail": (
+                    f"由基准+相位重建的基线 {recon_y_px:.6f}px 与布局 "
+                    f"{g.baseline_y_px:.6f}px 偏差超出{'1/64' if subpixel_position else '1'} 像素"
+                ),
+            })
+
+        # 3) 相位一致性只在启用亚像素笔位时成立：关闭亚像素是显式的整数
+        # 栅格模式，贴入相位本应为 0。组合记号横向恒为整数相位。
+        if subpixel_position:
+            if not g.is_combining and \
+                    abs(g.subpixel_frac_x - cov.subpixel_frac_x) > 1e-9:
+                anomalies.append({
+                    "kind": "pen_phase_drift",
+                    "text": g.text,
+                    "detail": (
+                        f"贴入相位 x={g.subpixel_frac_x} ≠ 栅格相位 "
+                        f"x={cov.subpixel_frac_x}"
+                    ),
+                })
+            if abs(g.subpixel_frac_y - cov.subpixel_frac_y) > 1e-9:
+                anomalies.append({
+                    "kind": "baseline_phase_drift",
+                    "text": g.text,
+                    "detail": (
+                        f"贴入相位 y={g.subpixel_frac_y} ≠ 栅格相位 "
+                        f"y={cov.subpixel_frac_y}（基线被吸附整数？）"
+                    ),
+                })
+        rows.append(row)
+    return {"rows": rows, "anomalies": anomalies}
 
 
 def _png_b64(rgb: np.ndarray) -> str:

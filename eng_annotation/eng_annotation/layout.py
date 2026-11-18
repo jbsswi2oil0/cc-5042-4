@@ -13,12 +13,11 @@
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 
-import numpy as np
-
 from .font_backend import FontBackend, _is_combining
-from .models import PlacedGlyph, TextLayout
+from .models import PlacedGlyph, TextLayout, split_pen_px
 from .raster_cache import GlyphCache
 
 
@@ -128,21 +127,25 @@ class LayoutEngine:
                 if not combining:
                     cursor_lu += kern_lu
 
-                # 先栅格化取覆盖（组合记号用基字符笔位的亚像素相位，
-                # 因为它将叠印在该位置附近；相位差异对零前进标记可忽略）
+                # 先栅格化取覆盖。普通字形的横纵笔位都带亚像素相位；组合
+                # 记号横向不做亚像素平移——其位置由整数着墨盒中心决定（见
+                # 下），但纵向沿用基线的相位，使标记与基字符在同一亚像素
+                # 基线上对齐，不因分数基线而错开。
                 cov = None
                 if self.backend.has_glyph(cp):
-                    if combining:
-                        frac = 0.0  # 标记定位后单独处理，见下方偏移
+                    if s.subpixel_position:
+                        probe_y_px = (baseline_y_lu + dy_lu) * ratio
+                        _, probe_frac_y = split_pen_px(probe_y_px)
+                        if combining:
+                            frac_x = 0.0
+                        else:
+                            probe_x_px = (origin_x_lu + cursor_lu) * ratio
+                            _, frac_x = split_pen_px(probe_x_px)
                     else:
-                        probe_px = (origin_x_lu + cursor_lu) * ratio
-                        frac = (
-                            float(probe_px - np.floor(probe_px))
-                            if s.subpixel_position else 0.0
-                        )
+                        frac_x = 0.0
+                        probe_frac_y = 0.0
                     cov = self.cache.get(
-                        cp, device_px, s.hinting,
-                        frac if s.subpixel_position else 0.0,
+                        cp, device_px, s.hinting, frac_x, probe_frac_y,
                     )
 
                 if combining:
@@ -169,6 +172,23 @@ class LayoutEngine:
                 pen_px = abs_pen_lu * ratio
                 baseline_px = abs_baseline_lu * ratio
 
+                # 贴入基准必须与栅格化时使用的相位一致：普通字形用同一
+                # split 拆出的整数基准；组合记号横向未做相位平移（位置由
+                # 整数着墨盒中心决定），故基准取 floor，纵向仍按基线相位。
+                if not s.subpixel_position:
+                    # 亚像素关闭：覆盖按整数相位栅格化，贴入取 floor 且相位记 0。
+                    pen_base_px = int(math.floor(pen_px))
+                    baseline_base_px = int(math.floor(baseline_px))
+                    place_frac_x = 0.0
+                    place_frac_y = 0.0
+                elif combining:
+                    pen_base_px = int(math.floor(pen_px))
+                    place_frac_x = 0.0
+                    baseline_base_px, place_frac_y = split_pen_px(baseline_px)
+                else:
+                    pen_base_px, place_frac_x = split_pen_px(pen_px)
+                    baseline_base_px, place_frac_y = split_pen_px(baseline_px)
+
                 placed.append(
                     PlacedGlyph(
                         codepoint=cp,
@@ -183,6 +203,10 @@ class LayoutEngine:
                         is_combining=combining,
                         scale=seg_scale,
                         dy_lu=dy_lu,
+                        pen_x_base_px=pen_base_px,
+                        baseline_y_base_px=baseline_base_px,
+                        subpixel_frac_x=place_frac_x,
+                        subpixel_frac_y=place_frac_y,
                     )
                 )
                 cursors.append(pen_lu)

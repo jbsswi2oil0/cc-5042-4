@@ -70,10 +70,26 @@ def test_hinting_changes_small_size_raster(backend):
 def test_hinting_forced_off_at_subpixel(backend):
     cov = backend.rasterize(ord("A"), 12.0, hinting=True, subpixel_frac_x=0.37)
     assert cov.hinted is False
-    assert cov.subpixel_frac_x == 0.37
+    # 相位吸附到 FT_Set_Transform 的 1/64 网格：0.37 → 24/64 = 0.375，
+    # 报告值即真正作用的位移，而不是未经量化的请求值。
+    assert cov.subpixel_frac_x == pytest.approx(0.375)
+    assert 0.0 <= cov.subpixel_frac_x < 1.0
     # 亚像素相位不同 => 覆盖不同
     other = backend.rasterize(ord("A"), 12.0, hinting=False, subpixel_frac_x=0.8)
     assert not np.array_equal(cov.coverage, other.coverage)
+
+
+def test_vertical_subpixel_phase_applied(backend):
+    """纵向相位必须真实平移覆盖（此前被忽略，基线只随整数像素跳变）。"""
+    ref = backend.rasterize(ord("H"), 12.0, hinting=False)
+    half = backend.rasterize(ord("H"), 12.0, hinting=False, subpixel_frac_y=0.5)
+    assert ref.subpixel_frac_y == 0.0
+    assert half.subpixel_frac_y == pytest.approx(0.5)
+    # 纵向半像素平移改变了覆盖（不是返回同一张图）
+    assert not np.array_equal(ref.coverage, half.coverage)
+    # 纵向相位非零时强制无 hinting
+    hinted = backend.rasterize(ord("H"), 12.0, hinting=True, subpixel_frac_y=0.5)
+    assert hinted.hinted is False
 
 
 def test_negative_bearing_combining_mark_preserved(backend):

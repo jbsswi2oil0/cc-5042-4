@@ -40,6 +40,7 @@ function renderAll() {
   $("cache-info").textContent =
     `缓存 ${RENDER.cache.entries} 项（命中 ${RENDER.cache.hits} / 未命中 ${RENDER.cache.misses}）`;
 
+  renderRunStatus();
   const img = $("sheet");
   img.src = "data:image/png;base64," + RENDER.image;
   img.onload = drawOverlay;
@@ -47,6 +48,24 @@ function renderAll() {
   renderAnnotationList();
   renderEditor();
   renderLayoutTables();
+}
+
+function renderRunStatus() {
+  const run = RENDER.run || {};
+  const el = $("run-status");
+  const warn = (run.warnings || []);
+  const ok = run.status === "ok";
+  el.className = "run-status " + (ok ? "ok" : "warn");
+  el.textContent = ok
+    ? `工程注记运行状态：正常 · DPR ${run.pixel_ratio} · ${run.annotations} 条注记 / ${run.glyphs} 字 · 栅格文字与采样位置一致`
+    : `工程注记运行状态：${warn.length} 项异常 · DPR ${run.pixel_ratio} · ${run.annotations} 条注记 / ${run.glyphs} 字`;
+  const list = $("anomaly-list");
+  if (ok) { list.classList.add("hidden"); list.innerHTML = ""; return; }
+  list.classList.remove("hidden");
+  list.innerHTML = "<h3>栅格文字 / 采样位置异常</h3>" + warn.map(w =>
+    `<div class="anomaly"><span class="badge">${w.kind}</span>` +
+    `<b>${w.name || ("注记" + w.index)}</b> 字符「${w.text === " " ? "␠" : w.text}」：${w.detail}</div>`
+  ).join("");
 }
 
 function renderAnnotationList() {
@@ -78,22 +97,36 @@ function renderLayoutTables() {
   RENDER.annotations.forEach((ann) => {
     const card = document.createElement("div");
     card.className = "layout-card";
+    const diag = ann.diagnostics || { rows: [], anomalies: [] };
+    // 用 文本+序号 作为异常定位键（同字符可能出现多次）
+    const badIdx = new Set();
+    diag.anomalies.forEach(a => {
+      ann.glyphs.forEach((g, i) => { if (g.text === a.text) badIdx.add(i); });
+    });
     let rows = ann.glyphs.map((g, i) => {
       const s = ann.samples[i];
-      return `<tr>
+      const d = diag.rows[i] || {};
+      const bad = badIdx.has(i);
+      return `<tr class="${bad ? "anomaly-row" : ""}">
         <td>${g.text === " " ? "␠" : g.text}</td>
         <td>${g.pen_x_lu}</td><td>${g.baseline_y_lu}</td>
         <td>${g.pen_x_px}</td><td>${g.baseline_y_px}</td>
+        <td>${g.pen_x_base_px}+${d.subpixel_frac_x ?? g.subpixel_frac_x}</td>
+        <td>${g.baseline_y_base_px}+${d.subpixel_frac_y ?? g.subpixel_frac_y}</td>
         <td>${g.advance_lu}</td>
         <td>${s ? s.box.join(",") : "-"}</td>
         <td>${g.combining ? "组合" : ""}${g.scale !== 1 ? "×" + g.scale : ""}</td>
       </tr>`;
     }).join("");
-    card.innerHTML = `<h3>${ann.name || ann.index} ｜ 逻辑宽 ${ann.width_lu}lu ｜ ` +
+    const badge = diag.anomalies.length
+      ? `<span class="card-badge warn">${diag.anomalies.length} 项异常</span>`
+      : `<span class="card-badge ok">采样一致</span>`;
+    card.innerHTML = `<h3>${ann.name || ann.index} ${badge} ｜ 逻辑宽 ${ann.width_lu}lu ｜ ` +
       `设备字号 ${ann.device_size_px}px ｜ 上沿 ${ann.ascent_lu} 下沿 ${ann.descent_lu}</h3>
       <table><thead><tr>
         <th>字</th><th>笔位x(lu)</th><th>基线y(lu)</th>
-        <th>笔位x(px)</th><th>基线y(px)</th><th>前进(lu)</th>
+        <th>笔位x(px)</th><th>基线y(px)</th>
+        <th>整数基准x+相位</th><th>整数基准y+相位</th><th>前进(lu)</th>
         <th>覆盖盒(px)</th><th>标记</th>
       </tr></thead><tbody>${rows}</tbody></table>`;
     wrap.appendChild(card);
@@ -113,6 +146,8 @@ function drawOverlay() {
   const ratio = RENDER.pixel_ratio;
   RENDER.annotations.forEach((ann, idx) => {
     const selected = idx === STATE.selected;
+    const diag = ann.diagnostics || { anomalies: [] };
+    const badTexts = new Set(diag.anomalies.map(a => a.text));
     ctx.strokeStyle = selected ? "rgba(47,102,210,0.95)" : "rgba(210,90,40,0.7)";
     ctx.fillStyle = ctx.strokeStyle;
     ctx.lineWidth = selected ? 2 : 1;
@@ -128,6 +163,16 @@ function drawOverlay() {
       ctx.moveTo(s.pen_x_px, s.baseline_y_px - 3);
       ctx.lineTo(s.pen_x_px, s.baseline_y_px + 3);
       ctx.stroke();
+      // 栅格文字 / 采样位置异常的字符：加品红虚线框，与正常采样盒区分
+      if (badTexts.has(s.text) && s.box[2] > s.box[0]) {
+        ctx.save();
+        ctx.setLineDash([3, 2]);
+        ctx.strokeStyle = "rgba(214,30,140,0.95)";
+        ctx.lineWidth = 2;
+        ctx.strokeRect(s.box[0] - 1.5, s.box[1] - 1.5,
+                       s.box[2] - s.box[0] + 3, s.box[3] - s.box[1] + 3);
+        ctx.restore();
+      }
     });
     // 逻辑基线（设备像素 = 逻辑 × DPR）
     const first = ann.samples[0];
