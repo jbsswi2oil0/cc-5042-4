@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+.pytest_cache/
+data/glyph_cache/
+data/snapshots/*.png
+data/snapshots/summary.json

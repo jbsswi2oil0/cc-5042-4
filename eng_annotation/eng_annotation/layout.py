@@ -1,0 +1,210 @@
+"""文本布局引擎。
+
+尺度约定（三者严格分离）：
+
+* 逻辑单位 lu：注记设计坐标与逻辑字号；
+* 设备像素 px：pen_x_px = pen_x_lu × pixel_ratio，覆盖只在 px 空间栅格化；
+* 字体尺度：设备像素字号 device_size = logical_size × ratio × 段缩放，
+  以非整数浮点传给 FreeType 重新栅格化。
+
+累计行长在浮点空间维护，逐字不取整；取整只发生在覆盖贴入位图那一刻，
+因此可审计“每字独立取整”会带来的累计误差（见 tests）。
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+
+import numpy as np
+
+from .font_backend import FontBackend, _is_combining
+from .models import PlacedGlyph, TextLayout
+from .raster_cache import GlyphCache
+
+
+@dataclass(frozen=True)
+class LayoutSettings:
+    pixel_ratio: float = 1.0
+    hinting: bool = True
+    subpixel_position: bool = True
+    # 上/下标相对基准字号的缩放与基线抬升（em 比例）
+    superscript_scale: float = 0.65
+    superscript_raise: float = 0.45
+    subscript_scale: float = 0.65
+    subscript_drop: float = 0.18
+    kerning: bool = True
+
+
+# 简易标记：^ 后跟随 {...} 或单字符为上标，_ 同理为下标，\ 转义。
+@dataclass
+class _Segment:
+    text: str
+    kind: str  # 'normal' | 'super' | 'sub'
+
+
+def parse_markup(text: str) -> list[_Segment]:
+    segments: list[_Segment] = []
+    i = 0
+    buf: list[str] = []
+
+    while i < len(text):
+        ch = text[i]
+        if ch == "\\" and i + 1 < len(text) and text[i + 1] in "^_{}":
+            buf.append(text[i + 1])
+            i += 2
+            continue
+        if ch in "^_":
+            if buf:
+                segments.append(_Segment("".join(buf), "normal"))
+                buf.clear()
+            kind = "super" if ch == "^" else "sub"
+            i += 1
+            if i < len(text) and text[i] == "{":
+                j = text.find("}", i + 1)
+                if j == -1:
+                    raise ValueError(f"标记未闭合: {text!r}")
+                segments.append(_Segment(text[i + 1:j], kind))
+                i = j + 1
+            elif i < len(text):
+                segments.append(_Segment(text[i], kind))
+                i += 1
+            continue
+        buf.append(ch)
+        i += 1
+    if buf:
+        segments.append(_Segment("".join(buf), "normal"))
+    return segments
+
+
+class LayoutEngine:
+    def __init__(self, cache: GlyphCache, settings: LayoutSettings) -> None:
+        self.cache = cache
+        self.backend: FontBackend = cache.backend
+        self.settings = settings
+
+    def layout(
+        self,
+        text: str,
+        logical_size_lu: float,
+        origin_x_lu: float = 0.0,
+        baseline_y_lu: float = 0.0,
+    ) -> TextLayout:
+        s = self.settings
+        ratio = s.pixel_ratio
+        base_device_px = logical_size_lu * ratio
+        metrics = self.backend.metrics_for_size(base_device_px)
+
+        placed: list[PlacedGlyph] = []
+        cursor_lu = 0.0  # 浮点逻辑笔位，全程不取整
+        base_pen_lu = 0.0  # 最近一个基字符笔位，供组合记号叠印
+        base_cov = None    # 最近基字符覆盖（含独立 bearing 度量）
+        cursors: list[float] = []
+        prev_cp: int | None = None
+
+        for seg in parse_markup(text):
+            if seg.kind == "super":
+                seg_scale, dy_lu = (
+                    s.superscript_scale,
+                    s.superscript_raise * logical_size_lu,
+                )
+            elif seg.kind == "sub":
+                seg_scale, dy_lu = (
+                    s.subscript_scale,
+                    -s.subscript_drop * logical_size_lu,
+                )
+            else:
+                seg_scale, dy_lu = 1.0, 0.0
+
+            device_px = base_device_px * seg_scale
+            for ch in seg.text:
+                cp = ord(ch)
+                combining = _is_combining(cp)
+                kern_lu = 0.0
+
+                if not combining and s.kerning and prev_cp is not None:
+                    kern_lu = (
+                        self.backend.kerning_px(prev_cp, cp, device_px) / ratio
+                    )
+                if not combining:
+                    cursor_lu += kern_lu
+
+                # 先栅格化取覆盖（组合记号用基字符笔位的亚像素相位，
+                # 因为它将叠印在该位置附近；相位差异对零前进标记可忽略）
+                cov = None
+                if self.backend.has_glyph(cp):
+                    if combining:
+                        frac = 0.0  # 标记定位后单独处理，见下方偏移
+                    else:
+                        probe_px = (origin_x_lu + cursor_lu) * ratio
+                        frac = (
+                            float(probe_px - np.floor(probe_px))
+                            if s.subpixel_position else 0.0
+                        )
+                    cov = self.cache.get(
+                        cp, device_px, s.hinting,
+                        frac if s.subpixel_position else 0.0,
+                    )
+
+                if combining:
+                    # FreeType 不暴露 GPOS mark attachment，按 Unicode 组合
+                    # 标记的标准近似处理：让标记着墨盒水平中心对齐基字符着墨
+                    # 盒中心。标记笔位 = 基字符笔位 + 中心差，负 bearing 由
+                    # target_box 原样保留，不会被裁或把标记甩出。
+                    if base_cov is not None and cov is not None:
+                        b0, _, b1, _ = base_cov.ink_box_px()
+                        m0, _, m1, _ = cov.ink_box_px()
+                        if m1 > m0:
+                            center_shift_px = ((b0 + b1) - (m0 + m1)) / 2.0
+                            mark_offset_lu = center_shift_px / ratio
+                        else:
+                            mark_offset_lu = 0.0
+                    else:
+                        mark_offset_lu = 0.0
+                    pen_lu = base_pen_lu + mark_offset_lu
+                else:
+                    pen_lu = cursor_lu
+
+                abs_pen_lu = origin_x_lu + pen_lu
+                abs_baseline_lu = baseline_y_lu + dy_lu
+                pen_px = abs_pen_lu * ratio
+                baseline_px = abs_baseline_lu * ratio
+
+                placed.append(
+                    PlacedGlyph(
+                        codepoint=cp,
+                        text=ch,
+                        pen_x_lu=abs_pen_lu,
+                        baseline_y_lu=abs_baseline_lu,
+                        pen_x_px=pen_px,
+                        baseline_y_px=baseline_px,
+                        advance_lu=(cov.advance_px / ratio) if cov else 0.0,
+                        kerning_lu=kern_lu,
+                        coverage=cov,
+                        is_combining=combining,
+                        scale=seg_scale,
+                        dy_lu=dy_lu,
+                    )
+                )
+                cursors.append(pen_lu)
+                if not combining:
+                    base_pen_lu = pen_lu
+                    base_cov = cov
+                    if cov is not None:
+                        cursor_lu += cov.advance_px / ratio
+                prev_cp = cp
+
+        width_lu = cursor_lu
+        return TextLayout(
+            text=text,
+            font_path=self.backend.font_path,
+            logical_size_lu=logical_size_lu,
+            pixel_ratio=ratio,
+            device_size_px=base_device_px,
+            hinted=s.hinting,
+            glyphs=tuple(placed),
+            width_lu=width_lu,
+            ascent_lu=metrics.ascent_px / ratio,
+            descent_lu=metrics.descent_px / ratio,
+            line_gap_lu=metrics.line_gap_px / ratio,
+            advance_cursor_lu=tuple(cursors),
+        )

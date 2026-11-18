@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>工程图注记 · 矢量编辑窗口</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header>
+  <h1>工程图注记编辑窗口</h1>
+  <div id="font-info" class="muted"></div>
+</header>
+
+<div id="error-banner" class="hidden"></div>
+
+<main>
+  <section id="canvas-panel">
+    <div class="toolbar">
+      <label>像素比 DPR
+        <select id="pixel-ratio">
+          <option value="1">1.0</option>
+          <option value="1.5">1.5</option>
+          <option value="2" selected>2.0</option>
+          <option value="2.5">2.5</option>
+          <option value="3">3.0</option>
+        </select>
+      </label>
+      <label><input type="checkbox" id="hinting" checked> hinting</label>
+      <label><input type="checkbox" id="subpixel" checked> 亚像素笔位</label>
+      <label><input type="checkbox" id="show-samples" checked> 采样位置</label>
+      <button id="re-render">重新栅格化</button>
+      <span id="cache-info" class="muted"></span>
+    </div>
+    <div id="canvas-wrap">
+      <img id="sheet" alt="栅格化图面">
+      <canvas id="overlay"></canvas>
+    </div>
+    <p class="hint">在图面按住注记可拖动（逻辑坐标）；点击选中，右侧编辑。
+       放大浏览器不会重新栅格化，只有改像素比才会以新设备字号真实重栅格化。</p>
+  </section>
+
+  <aside id="side-panel">
+    <h2>注记列表</h2>
+    <ul id="ann-list"></ul>
+
+    <h2>选中注记</h2>
+    <div id="editor">
+      <label>文本（^上标 _下标，如 M8-^{0.5}）
+        <input id="ed-text" type="text"></label>
+      <label>逻辑字号
+        <input id="ed-size" type="number" step="0.5" min="1"></label>
+      <label>X（逻辑单位）<input id="ed-x" type="number" step="0.5"></label>
+      <label>Y（基线，逻辑单位）<input id="ed-y" type="number" step="0.5"></label>
+      <label>颜色 <input id="ed-color" type="color"></label>
+      <div class="row">
+        <button id="ed-apply">应用</button>
+        <button id="ed-delete" class="danger">删除</button>
+      </div>
+      <div class="row">
+        <button data-move="(-8,0)">←8</button>
+        <button data-move="(8,0)">→8</button>
+        <button data-move="(0,-8)">↑8</button>
+        <button data-move="(0,8)">↓8</button>
+      </div>
+    </div>
+
+    <h2>单字覆盖查看</h2>
+    <div id="glyph-panel">
+      <label>字符 <input id="gl-char" type="text" value="0" maxlength="2"></label>
+      <label>逻辑字号 <input id="gl-size" type="number" value="12" step="0.5"></label>
+      <button id="gl-show">查看真实栅格</button>
+      <img id="gl-image" alt="单字灰度覆盖">
+      <table id="gl-metrics"></table>
+    </div>
+  </aside>
+</main>
+
+<section id="layout-panel">
+  <h2>布局与采样数据（内核返回，未逐字取整）</h2>
+  <div id="layout-tables"></div>
+</section>
+
+<script src="/static/app.js"></script>
+</body>
+</html>
